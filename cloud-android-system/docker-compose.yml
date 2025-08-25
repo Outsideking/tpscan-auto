@@ -1,1 +1,26 @@
+version: "3.8"
+services:
+  backend:
+    build: ./backend
+    container_name: backend
+    ports:
+      - "4000:4000"
+    environment:
+      - STRIPE_SECRET_KEY=sk_test_xxx
+      - NODE_ENV=production
+    depends_on:
+      - db
 
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+  cloud-android-web:
+    build: ./cloud-android-web
+    container_name: cloud-android-web
+    ports:
+      - "6080:6080"
