@@ -1,12 +1,25 @@
 <!DOCTYPE html>
-<html>
+<html lang="th">
 <head>
+  <meta charset="UTF-8" />
   <title>Cloud Android Web</title>
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
-  <h1>Welcome to Cloud Android Web</h1>
-  <button id="openEmulator">Open Emulator</button>
+  <header><h1>Cloud Android Web</h1></header>
+
+  <section class="card">
+    <h2>เข้าสู่ Emulator</h2>
+    <p id="emuVer">กำลังตรวจสอบเวอร์ชัน...</p>
+    <button id="openEmu">Open Emulator</button>
+  </section>
+
+  <section class="card">
+    <h2>ชำระเงิน</h2>
+    <label>จำนวนเงิน (USD): <input type="number" id="amount" value="5" min="1"/></label>
+    <button id="payBtn">Pay</button>
+    <p id="payMsg"></p>
+  </section>
 
   <script src="js/main.js"></script>
 </body>
