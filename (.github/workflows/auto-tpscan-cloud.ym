@@ -15,27 +15,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      # Install deps
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y golang-go python3-pip docker.io docker-compose jq
           pip3 install --upgrade openai requests boto3
 
-      # Build TPscan
       - name: Build TPscan
         run: |
           mkdir -p tools && cd tools
           git clone https://github.com/captain686/TpScan.git
           cd TpScan && go build -o tpscan
 
-      # Run scan
       - name: Run TPscan
         run: |
           mkdir -p reports
           ./tools/TpScan/tpscan -f targets.txt | tee reports/raw.txt
 
-      # GPT summary + Discord
       - name: GPT Summary + Discord
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -63,7 +59,6 @@ webhook = os.environ.get("DISCORD_WEBHOOK")
 if webhook: requests.post(webhook, json={"content": f"**TPscan Summary**\n```\n{md[:1900]}\n```"})
 PY
 
-      # Commit report
       - name: Commit report
         run: |
           git checkout -B scan-reports
@@ -71,24 +66,20 @@ PY
           git commit -m "TPscan report $(date -u +'%Y-%m-%dT%H:%MZ')" || echo "No changes"
           git push -f https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git scan-reports
 
-      # Build Docker Cloud Android
       - name: Build Docker image
         run: |
           cd cloud-android-web
           docker build -t cloud-android-web:latest .
 
-      # Login to AWS ECR
       - name: AWS ECR login
         uses: aws-actions/amazon-ecr-login@v1
 
-      # Tag & push Docker to ECR
       - name: Push Docker image
         run: |
           IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/cloud-android-web:latest
           docker tag cloud-android-web:latest $IMAGE_URI
           docker push $IMAGE_URI
 
-      # Deploy to ECS
       - name: Deploy ECS service
         run: |
           IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/cloud-android-web:latest
