@@ -1,26 +1,14 @@
-version: "3.8"
-services:
-  backend:
-    build: ./backend
-    container_name: backend
-    ports:
-      - "4000:4000"
-    environment:
-      - STRIPE_SECRET_KEY=sk_test_xxx
-      - NODE_ENV=production
-    depends_on:
-      - db
+environment:
+  # PayPal
+  - PAYPAL_ENV=sandbox            # หรือ live
+  - PAYPAL_CLIENT_ID=...
+  - PAYPAL_CLIENT_SECRET=...
+  - PAYPAL_RETURN_URL=https://yourdomain/paypal/return
+  - PAYPAL_CANCEL_URL=https://yourdomain/paypal/cancel
 
-  frontend:
-    build: ./frontend
-    container_name: frontend
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
+  # Opn/Omise
+  - OPN_SECRET_KEY=skey_test_xxx  # หรือ OMISE_SECRET_KEY
+  - OPN_RETURN_URL=https://yourdomain/opn/return
 
-  cloud-android-web:
-    build: ./cloud-android-web
-    container_name: cloud-android-web
-    ports:
-      - "6080:6080"
+  # Frontend (serve as static - ใส่ public key ใน HTML)
+  # <script>window.OMISE_PUBLIC_KEY="pkey_test_xxx";</script>
