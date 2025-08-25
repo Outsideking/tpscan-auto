@@ -1,1 +1,27 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <title>Admin Panel</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header><h1>Admin Panel</h1></header>
 
+  <section class="card">
+    <h2>ปรับเวอร์ชัน Cloud Android</h2>
+    <input type="text" id="newTag" placeholder="เช่น latest หรือ v1.2.0"/>
+    <button id="setTagBtn">ตั้งค่าเวอร์ชัน</button>
+    <p id="tagMsg"></p>
+  </section>
+
+  <script>
+    document.getElementById("setTagBtn").onclick = async () => {
+      const tag = document.getElementById("newTag").value.trim();
+      const res = await fetch("/api/emulator/version",{method:"POST",headers:{'Content-Type':'application/json'},body:JSON.stringify({tag})});
+      const data = await res.json();
+      document.getElementById("tagMsg").textContent = data.ok ? `ตั้งค่าเสร็จ: ${data.tag}` : (data.error||"error");
+    };
+  </script>
+</body>
+</html>
