@@ -1,0 +1,98 @@
+name: Deploy Cloud Android System (ECS)
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: ["main"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Login ECR
+      run: aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+
+    - name: Build images
+      run: |
+        docker build -t cloud-android-web ./cloud-android-web
+        docker build -t backend ./backend
+        docker build -t frontend ./frontend
+
+    - name: Push images
+      run: |
+        ACC=${{ secrets.AWS_ACCOUNT_ID }}
+        REG=${{ secrets.AWS_REGION }}
+        for IMG in cloud-android-web backend frontend; do
+          docker tag $IMG:latest $ACC.dkr.ecr.$REG.amazonaws.com/$IMG:latest
+          docker push $ACC.dkr.ecr.$REG.amazonaws.com/$IMG:latest
+        done
+
+    - name: Detect default VPC / Subnets / SG
+      id: net
+      run: |
+        REG=${{ secrets.AWS_REGION }}
+        VPC=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query "Vpcs[0].VpcId" --output text --region $REG)
+        SUBS=$(aws ec2 describe-subnets --filters Name=vpc-id,Values=$VPC Name=map-public-ip-on-launch,Values=true --query "Subnets[].SubnetId" --output text --region $REG)
+        SUBLIST=$(echo $SUBS | awk '{print $1","$2}')
+        SG=$(aws ec2 describe-security-groups --filters Name=vpc-id,Values=$VPC Name=group-name,Values=default --query "SecurityGroups[0].GroupId" --output text --region $REG)
+        echo "subnets=$SUBLIST" >> $GITHUB_OUTPUT
+        echo "sg=$SG" >> $GITHUB_OUTPUT
+
+    - name: Register task + deploy services
+      env:
+        ACC: ${{ secrets.AWS_ACCOUNT_ID }}
+        REG: ${{ secrets.AWS_REGION }}
+        SUBNETS: ${{ steps.net.outputs.subnets }}
+        SG: ${{ steps.net.outputs.sg }}
+      run: |
+        set -e
+        CLUSTER=cloud-android-cluster
+        declare -A MAP=( \
+          ["cloud-android-web"]="80:6080" \
+          ["backend"]="80:4000" \
+          ["frontend"]="80:80" \
+        )
+        for SVC in "${!MAP[@]}"; do
+          IFS=":" read -r HOSTPORT CONTPORT <<< "${MAP[$SVC]}"
+          cat > taskdef.json <<EOF
+          {
+            "family": "${SVC}-task",
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "512",
+            "memory": "1024",
+            "executionRoleArn": "arn:aws:iam::${ACC}:role/ecsTaskExecutionRole",
+            "containerDefinitions": [{
+              "name": "${SVC}",
+              "image": "${ACC}.dkr.ecr.${REG}.amazonaws.com/${SVC}:latest",
+              "essential": true,
+              "portMappings": [{"containerPort": ${CONTPORT}, "protocol": "tcp"}],
+              "environment": [
+                {"name":"DB_HOST","value":"db"}, {"name":"DB_USER","value":"appuser"},
+                {"name":"DB_PASS","value":"apppass"},{"name":"DB_NAME","value":"appdb"},
+                {"name":"CLOUD_ANDROID_HOST","value":"http://<ALB-DNS>"},
+                {"name":"CLOUD_ANDROID_PORT","value":"6080"}
+              ]
+            }]
+          }
+EOF
+          ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef.json --region $REG --query "taskDefinition.taskDefinitionArn" --output text)
+
+          if aws ecs describe-services --cluster $CLUSTER --services $SVC --region $REG | grep -q '"status": "ACTIVE"'; then
+            aws ecs update-service --cluster $CLUSTER --service $SVC --task-definition $ARN --force-new-deployment --region $REG
+          else
+            aws ecs create-service --cluster $CLUSTER --service-name $SVC --task-definition $ARN \
+              --desired-count 1 --launch-type FARGATE \
+              --network-configuration "awsvpcConfiguration={subnets=[${SUBNETS}],securityGroups=[${SG}],assignPublicIp=ENABLED}" \
+              --region $REG
+          fi
+        done
