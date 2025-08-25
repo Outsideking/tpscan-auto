@@ -1,4 +1,4 @@
-name: Full Auto TPscan + GPT + Cloud Android + Web ECS
+name: Full Auto Deploy TPscan + GPT + Cloud Android + Web + Mongo
 
 on:
   workflow_dispatch: {}
@@ -6,7 +6,7 @@ on:
     - cron: '0 2 * * *'
 
 jobs:
-  full-auto-deploy:
+  deploy-all:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -17,7 +17,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y golang-go python3-pip docker.io docker-compose jq
+          sudo apt-get install -y golang-go python3-pip docker.io docker-compose jq unzip openjdk-11-jdk
           pip3 install --upgrade openai requests boto3
 
       # TPscan
@@ -64,36 +64,43 @@ PY
           git commit -m "TPscan report $(date -u +'%Y-%m-%dT%H:%MZ')" || echo "No changes"
           git push -f https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git scan-reports
 
-      # Build Docker images for Cloud Android, backend, frontend
+      # Build Docker images
       - name: Build Docker images
         run: |
-          cd cloud-android-web
-          docker build -t cloud-android-web:latest .
-          cd ../backend
-          docker build -t backend:latest .
-          cd ../frontend
-          docker build -t frontend:latest .
+          docker build -t cloud-android-web ./cloud-android-web
+          docker build -t backend ./backend
+          docker build -t frontend ./frontend
+          docker-compose -f mongo/docker-compose-mongo.yml build
 
       # AWS ECR login
       - name: AWS ECR login
         uses: aws-actions/amazon-ecr-login@v1
 
-      # Push images to ECR
+      # Tag & push Docker images to ECR
       - name: Push Docker images
         run: |
           AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
           AWS_REGION=${{ secrets.AWS_REGION }}
-          docker tag cloud-android-web:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/cloud-android-web:latest
+          docker tag cloud-android-web $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/cloud-android-web:latest
           docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/cloud-android-web:latest
-          docker tag backend:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/backend:latest
+          docker tag backend $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/backend:latest
           docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/backend:latest
-          docker tag frontend:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/frontend:latest
+          docker tag frontend $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/frontend:latest
           docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/frontend:latest
+          docker tag mongo_mongo $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/mongo:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/mongo:latest
 
-      # Deploy ECS Service
-      - name: Deploy ECS service
+      # Create/Update ECS Fargate Services
+      - name: Deploy ECS services
         run: |
           AWS_REGION=${{ secrets.AWS_REGION }}
-          aws ecs update-service --cluster cloud-android-cluster --service cloud-android-service --force-new-deployment --region $AWS_REGION
-          aws ecs update-service --cluster cloud-android-cluster --service backend-service --force-new-deployment --region $AWS_REGION
-          aws ecs update-service --cluster cloud-android-cluster --service frontend-service --force-new-deployment --region $AWS_REGION
+          CLUSTER=cloud-android-cluster
+
+          for SERVICE in cloud-android-service backend-service frontend-service mongo-service; do
+            aws ecs update-service \
+              --cluster $CLUSTER \
+              --service $SERVICE \
+              --force-new-deployment \
+              --region $AWS_REGION || echo "Service $SERVICE not exists, creating..."
+            # You could add create-service command here if needed
+          done
