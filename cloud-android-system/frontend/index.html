@@ -1,26 +1,29 @@
-<!DOCTYPE html>
-<html lang="th">
-<head>
-  <meta charset="UTF-8" />
-  <title>Cloud Android Web</title>
-  <link rel="stylesheet" href="css/style.css" />
-</head>
-<body>
-  <header><h1>Cloud Android Web</h1></header>
+<section class="card">
+  <h2>ชำระเงิน</h2>
+  <label>จำนวน (THB): <input type="number" id="amount" value="99" min="1"></label>
+  <div style="margin:8px 0">
+    <label><input type="radio" name="provider" value="paypal"> PayPal</label>
+    <label><input type="radio" name="provider" value="opn" checked> Opn/Omise (TH)</label>
+  </div>
+  <div id="opnMethods">
+    <select id="opnMethod">
+      <option value="truemoney">TrueMoney Wallet</option>
+      <option value="promptpay">PromptPay (QR)</option>
+      <option value="internet_banking_bbl">BBL Internet Banking</option>
+      <option value="internet_banking_kbank">KBank Internet Banking</option>
+      <option value="card">บัตรเครดิต/เดบิต (Omise Token)</option>
+    </select>
+  </div>
+  <div id="cardBox" style="display:none;margin-top:8px">
+    <input id="cardNumber" placeholder="Card number">
+    <input id="cardName" placeholder="Name on card">
+    <input id="cardExpM" placeholder="MM" size="2">
+    <input id="cardExpY" placeholder="YYYY" size="4">
+    <input id="cardCVC" placeholder="CVC" size="3">
+  </div>
+  <button id="payBtn">ชำระเงิน</button>
+  <p id="payMsg"></p>
+</section>
 
-  <section class="card">
-    <h2>เข้าสู่ Emulator</h2>
-    <p id="emuVer">กำลังตรวจสอบเวอร์ชัน...</p>
-    <button id="openEmu">Open Emulator</button>
-  </section>
-
-  <section class="card">
-    <h2>ชำระเงิน</h2>
-    <label>จำนวนเงิน (USD): <input type="number" id="amount" value="5" min="1"/></label>
-    <button id="payBtn">Pay</button>
-    <p id="payMsg"></p>
-  </section>
-
-  <script src="js/main.js"></script>
-</body>
-</html>
+<!-- Omise.js (ถ้าใช้ card) -->
+<script src="https://cdn.omise.co/omise.js"></script>
