@@ -1,0 +1,99 @@
+name: Full Auto TPscan + GPT + Cloud Android + Web ECS
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 2 * * *'
+
+jobs:
+  full-auto-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y golang-go python3-pip docker.io docker-compose jq
+          pip3 install --upgrade openai requests boto3
+
+      # TPscan
+      - name: Build TPscan
+        run: |
+          mkdir -p tools && cd tools
+          git clone https://github.com/captain686/TpScan.git
+          cd TpScan && go build -o tpscan
+
+      - name: Run TPscan
+        run: |
+          mkdir -p reports
+          ./tools/TpScan/tpscan -f targets.txt | tee reports/raw.txt
+
+      # GPT summary + Discord
+      - name: GPT Summary + Discord
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          python3 - <<'PY'
+import os, io, requests
+from openai import OpenAI
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+raw = io.open("reports/raw.txt","r",encoding="utf-8",errors="ignore").read()
+prompt = ("สรุปผล TPscan bullet list:\n1) ความเสี่ยงสูง→ต่ำ\n2) URL/หลักฐานช่องโหว่\n3) ข้อเสนอแนะ\n\nRaw logs:\n" + raw[:120000])
+resp = client.chat.completions.create(
+    model="gpt-5",
+    messages=[{"role":"system","content":"คุณเป็นนักวิเคราะห์ความปลอดภัยเว็บ"},
+              {"role":"user","content":prompt}],
+    temperature=0
+)
+md = resp.choices[0].message.content
+io.open("reports/summary.md","w",encoding="utf-8").write(md)
+webhook = os.environ.get("DISCORD_WEBHOOK")
+if webhook: requests.post(webhook, json={"content": f"**TPscan Summary**\n```\n{md[:1900]}\n```"})
+PY
+
+      # Commit reports
+      - name: Commit reports
+        run: |
+          git checkout -B scan-reports
+          git add reports/*
+          git commit -m "TPscan report $(date -u +'%Y-%m-%dT%H:%MZ')" || echo "No changes"
+          git push -f https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git scan-reports
+
+      # Build Docker images for Cloud Android, backend, frontend
+      - name: Build Docker images
+        run: |
+          cd cloud-android-web
+          docker build -t cloud-android-web:latest .
+          cd ../backend
+          docker build -t backend:latest .
+          cd ../frontend
+          docker build -t frontend:latest .
+
+      # AWS ECR login
+      - name: AWS ECR login
+        uses: aws-actions/amazon-ecr-login@v1
+
+      # Push images to ECR
+      - name: Push Docker images
+        run: |
+          AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION=${{ secrets.AWS_REGION }}
+          docker tag cloud-android-web:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/cloud-android-web:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/cloud-android-web:latest
+          docker tag backend:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/backend:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/backend:latest
+          docker tag frontend:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/frontend:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/frontend:latest
+
+      # Deploy ECS Service
+      - name: Deploy ECS service
+        run: |
+          AWS_REGION=${{ secrets.AWS_REGION }}
+          aws ecs update-service --cluster cloud-android-cluster --service cloud-android-service --force-new-deployment --region $AWS_REGION
+          aws ecs update-service --cluster cloud-android-cluster --service backend-service --force-new-deployment --region $AWS_REGION
+          aws ecs update-service --cluster cloud-android-cluster --service frontend-service --force-new-deployment --region $AWS_REGION
