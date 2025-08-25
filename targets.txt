@@ -1,2 +1,5 @@
 https://example.com
 https://sub.example.com
+https://huggingface.co/
+https://www.google.com
+https://www.micosoft.com
