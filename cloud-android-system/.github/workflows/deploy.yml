@@ -22,13 +22,13 @@ jobs:
       - name: Login to Amazon ECR
         run: |
           aws ecr get-login-password --region ap-southeast-2 \
-            | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.ap-southeast-2.amazonaws.com
+            | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-southeast-2.amazonaws.com
 
       - name: Build, tag, and push docker image
         run: |
           docker build -t cloud-android .
-          docker tag cloud-android:latest <AWS_ACCOUNT_ID>.dkr.ecr.ap-southeast-2.amazonaws.com/cloud-android:latest
-          docker push <AWS_ACCOUNT_ID>.dkr.ecr.ap-southeast-2.amazonaws.com/cloud-android:latest
+          docker tag cloud-android:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-southeast-2.amazonaws.com/cloud-android:latest
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-southeast-2.amazonaws.com/cloud-android:latest
 
       - name: Deploy to ECS
         run: |
