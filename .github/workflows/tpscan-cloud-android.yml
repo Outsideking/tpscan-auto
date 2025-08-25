@@ -1,1 +1,160 @@
+name: TPscan + GPT + Cloud Android Auto Deploy
 
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 2 * * *'  # ทุกวัน 09:00 น. ไทย
+
+jobs:
+  scan-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      # 1️⃣ Clone repo
+      - name: Clone repo
+        run: |
+          git clone "https://github.com/${GITHUB_REPOSITORY}.git" repo
+          echo "WORKDIR=$PWD/repo" >> $GITHUB_ENV
+
+      # 2️⃣ Install dependencies
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y golang-go python3-pip docker.io docker-compose jq
+          pip3 install --upgrade openai requests
+
+      # 3️⃣ Build TPscan
+      - name: Build TPscan
+        run: |
+          cd "$WORKDIR/tools" || mkdir -p "$WORKDIR/tools"
+          cd "$WORKDIR/tools"
+          git clone https://github.com/captain686/TpScan.git
+          cd TpScan
+          go build -o tpscan
+
+      # 4️⃣ Run scan
+      - name: Run TPscan
+        run: |
+          cd "$WORKDIR"
+          mkdir -p reports
+          ./tools/TpScan/tpscan -f targets.txt | tee reports/raw.txt
+
+      # 5️⃣ GPT Summary + Discord
+      - name: GPT Summary + Discord
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          cd "$WORKDIR"
+          python3 - << 'PY'
+import os, io, requests
+from openai import OpenAI
+
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+raw = io.open("reports/raw.txt","r",encoding="utf-8",errors="ignore").read()
+prompt = (
+  "สรุปผลการสแกน ThinkPHP แบบ bullet list:\n"
+  "1) จัดระดับความเสี่ยงสูง→ต่ำ\n"
+  "2) ไล่ URL/หลักฐานช่องโหว่\n"
+  "3) ข้อเสนอแนะสั้นๆ\n\n"
+  f"Raw logs (ตัดย่อ):\n{raw[:120000]}"
+)
+resp = client.chat.completions.create(
+    model="gpt-5",
+    messages=[
+      {"role":"system","content":"คุณเป็นนักวิเคราะห์ความปลอดภัยเว็บ"},
+      {"role":"user","content":prompt}
+    ],
+    temperature=0
+)
+md = resp.choices[0].message.content
+io.open("reports/summary.md","w",encoding="utf-8").write(md)
+
+# ส่งไป Discord
+discord_webhook = os.environ.get("DISCORD_WEBHOOK")
+if discord_webhook:
+    content = f"**TPscan Daily Summary**\n```\n{md[:1900]}\n```"
+    requests.post(discord_webhook, json={"content": content})
+PY
+
+      # 6️⃣ Commit summary/report
+      - name: Commit reports
+        env:
+          GIT_AUTHOR_NAME: github-actions
+          GIT_AUTHOR_EMAIL: actions@github.com
+          GIT_COMMITTER_NAME: github-actions
+          GIT_COMMITTER_EMAIL: actions@github.com
+        run: |
+          cd "$WORKDIR"
+          git checkout -B scan-reports
+          git add reports/*
+          git commit -m "tpscan report $(date -u +'%Y-%m-%dT%H:%MZ')" || echo "No changes"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" scan-reports
+
+      # 7️⃣ Build & deploy cloud-android-web (Docker)
+      - name: Build & deploy cloud-android-web
+        run: |
+          cd "$WORKDIR/cloud-android-web"
+          
+          # Dockerfile
+          cat > Dockerfile <<'EOF'
+FROM ubuntu:20.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y wget unzip openjdk-11-jdk libgl1-mesa-dev libx11-6 xvfb x11vnc fluxbox novnc websockify && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /opt/android-sdk && cd /opt \
+    && wget https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip -O cmdline-tools.zip \
+    && unzip cmdline-tools.zip -d android-sdk \
+    && rm cmdline-tools.zip
+ENV ANDROID_HOME=/opt/android-sdk
+ENV PATH=$ANDROID_HOME/cmdline-tools/bin:$ANDROID_HOME/platform-tools:$PATH
+RUN yes | sdkmanager --licenses || true
+RUN sdkmanager "platform-tools" "platforms;android-30" "system-images;android-30;google_apis;x86_64" "emulator"
+RUN echo "no" | avdmanager create avd -n test -k "system-images;android-30;google_apis;x86_64" --device "pixel"
+COPY start.sh /start.sh
+RUN chmod +x /start.sh
+EXPOSE 6080
+CMD ["/start.sh"]
+EOF
+
+          # start.sh
+          cat > start.sh <<'EOF'
+#!/bin/bash
+export DISPLAY=:0
+Xvfb :0 -screen 0 1280x720x16 &
+fluxbox &
+x11vnc -forever -nopw -display :0 -rfbport 5900 &
+websockify --web=/usr/share/novnc/ 6080 localhost:5900 &
+emulator -avd test -noaudio -no-boot-anim -accel on -gpu swiftshader_indirect &
+tail -f /dev/null
+EOF
+
+          # docker-compose.yml
+          cat > docker-compose.yml <<'EOF'
+version: '3.8'
+services:
+  android:
+    build: .
+    ports:
+      - "6080:6080"
+  backend:
+    image: node:18
+    working_dir: /app
+    volumes:
+      - ./../backend:/app
+    command: npm start
+    ports:
+      - "4000:4000"
+  frontend:
+    build: ./../frontend
+    ports:
+      - "3000:3000"
+  mongo:
+    image: mongo
+    ports:
+      - "27017:27017"
+EOF
+
+          docker-compose down || true
+          docker-compose up -d --build
