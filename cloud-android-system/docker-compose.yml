@@ -1,14 +1,12 @@
-environment:
-  # PayPal
-  - PAYPAL_ENV=sandbox            # หรือ live
-  - PAYPAL_CLIENT_ID=...
-  - PAYPAL_CLIENT_SECRET=...
-  - PAYPAL_RETURN_URL=https://yourdomain/paypal/return
-  - PAYPAL_CANCEL_URL=https://yourdomain/paypal/cancel
-
-  # Opn/Omise
-  - OPN_SECRET_KEY=skey_test_xxx  # หรือ OMISE_SECRET_KEY
-  - OPN_RETURN_URL=https://yourdomain/opn/return
-
-  # Frontend (serve as static - ใส่ public key ใน HTML)
-  # <script>window.OMISE_PUBLIC_KEY="pkey_test_xxx";</script>
+services:
+  backend:
+    environment:
+      - STRIPE_SECRET_KEY=sk_test_xxx
+      - PAYPAL_ENV=sandbox
+      - PAYPAL_CLIENT_ID=paypal_client_id
+      - PAYPAL_CLIENT_SECRET=paypal_secret
+      - PAYPAL_RETURN_URL=https://yourdomain/paypal/return
+      - PAYPAL_CANCEL_URL=https://yourdomain/paypal/cancel
+      - OPN_SECRET_KEY=skey_test_xxx
+      - OPN_RETURN_URL=https://yourdomain/opn/return
+      - OMISE_PUBLIC_KEY=pkey_test_xxx   # for frontend tokenization (injected into HTML)
