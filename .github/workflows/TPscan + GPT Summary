@@ -1,1 +1,88 @@
 Run workflow
+name: TPscan + GPT Summary + Discord
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 2 * * *' # รันทุกวัน 09:00 น. ไทย (UTC+7)
+
+jobs:
+  scan-and-report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Clone repo
+        run: |
+          REPO="${GITHUB_REPOSITORY}"
+          git clone "https://github.com/${REPO}.git" repo
+          echo "WORKDIR=$PWD/repo" >> $GITHUB_ENV
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y golang-go python3-pip jq
+          pip3 install --upgrade openai requests
+
+      - name: Build TPscan
+        run: |
+          cd "$WORKDIR"
+          mkdir -p tools && cd tools
+          git clone https://github.com/captain686/TpScan.git
+          cd TpScan
+          go build -o tpscan
+
+      - name: Run scan
+        run: |
+          cd "$WORKDIR"
+          mkdir -p reports
+          ./tools/TpScan/tpscan -f targets.txt | tee reports/raw.txt
+
+      - name: Summarize with GPT
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          cd "$WORKDIR"
+          python3 - << 'PY'
+import os, io, requests
+from openai import OpenAI
+
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+raw = io.open("reports/raw.txt","r",encoding="utf-8",errors="ignore").read()
+prompt = (
+  "สรุปผลการสแกน ThinkPHP แบบ bullet list:\n"
+  "1) จัดระดับความเสี่ยงสูง→ต่ำ\n"
+  "2) ไล่ URL/หลักฐานช่องโหว่\n"
+  "3) ข้อเสนอแนะสั้นๆ\n\n"
+  f"Raw logs (ตัดย่อ):\n{raw[:120000]}"
+)
+resp = client.chat.completions.create(
+    model="gpt-5",
+    messages=[
+      {"role":"system","content":"คุณเป็นนักวิเคราะห์ความปลอดภัยเว็บ"},
+      {"role":"user","content":prompt}
+    ],
+    temperature=0
+)
+md = resp.choices[0].message.content
+io.open("reports/summary.md","w",encoding="utf-8").write(md)
+
+# ส่งไป Discord
+discord_webhook = os.environ.get("DISCORD_WEBHOOK")
+if discord_webhook:
+    content = f"**TPscan Daily Summary**\n```\n{md[:1900]}\n```"
+    requests.post(discord_webhook, json={"content": content})
+PY
+
+      - name: Commit reports to branch
+        env:
+          GIT_AUTHOR_NAME: github-actions
+          GIT_AUTHOR_EMAIL: actions@github.com
+          GIT_COMMITTER_NAME: github-actions
+          GIT_COMMITTER_EMAIL: actions@github.com
+        run: |
+          cd "$WORKDIR"
+          git checkout -B scan-reports
+          git add reports/*
+          git commit -m "tpscan report $(date -u +'%Y-%m-%dT%H:%MZ')" || echo "No changes"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" scan-reports
