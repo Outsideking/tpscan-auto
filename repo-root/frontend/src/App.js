@@ -1,15 +1,32 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
+import { getCloudAndroidURL } from "./ecsStatus";
 
 function App() {
-  const noVNCUrl = "http://<ALB-DNS>:6080/vnc.html"; // แทนด้วย ALB DNS หลัง deploy
+  const [url, setUrl] = useState(null);
+
+  useEffect(() => {
+    async function fetchURL() {
+      const ecsUrl = await getCloudAndroidURL();
+      setUrl(ecsUrl);
+    }
+    fetchURL();
+  }, []);
 
   return (
     <div style={{ textAlign: "center", marginTop: "50px" }}>
       <h1>Cloud Android Web</h1>
-      <p>กดปุ่มด้านล่างเพื่อเข้าสู่ Android Emulator ผ่าน noVNC</p>
-      <a href={noVNCUrl} target="_blank" rel="noopener noreferrer">
-        <button style={{ padding: "10px 20px", fontSize: "16px" }}>Open Emulator</button>
-      </a>
+      {!url ? (
+        <p>Loading ECS container status...</p>
+      ) : (
+        <>
+          <p>Click button below to access Android Emulator via noVNC</p>
+          <a href={url} target="_blank" rel="noopener noreferrer">
+            <button style={{ padding: "10px 20px", fontSize: "16px" }}>
+              Open Emulator
+            </button>
+          </a>
+        </>
+      )}
     </div>
   );
 }
