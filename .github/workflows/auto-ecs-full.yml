@@ -1,0 +1,137 @@
+name: Full Auto ECS Deploy TPscan + GPT + Cloud Android + Web + Mongo
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  deploy-all:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y golang-go python3-pip docker.io docker-compose jq unzip openjdk-11-jdk
+          pip3 install --upgrade openai requests boto3
+
+      # TPscan
+      - name: Build & Run TPscan
+        run: |
+          mkdir -p tools && cd tools
+          git clone https://github.com/captain686/TpScan.git
+          cd TpScan && go build -o tpscan
+          mkdir -p ../../reports
+          ./tpscan -f ../../targets.txt | tee ../../reports/raw.txt
+
+      # GPT + Discord
+      - name: GPT Summary + Discord
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          python3 - <<'PY'
+import os, io, requests
+from openai import OpenAI
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+raw = io.open("reports/raw.txt","r",encoding="utf-8",errors="ignore").read()
+prompt = ("สรุปผล TPscan bullet list:\n1) ความเสี่ยงสูง→ต่ำ\n2) URL/หลักฐานช่องโหว่\n3) ข้อเสนอแนะ\n\nRaw logs:\n" + raw[:120000])
+resp = client.chat.completions.create(
+    model="gpt-5",
+    messages=[{"role":"system","content":"คุณเป็นนักวิเคราะห์ความปลอดภัยเว็บ"},
+              {"role":"user","content":prompt}],
+    temperature=0
+)
+md = resp.choices[0].message.content
+io.open("reports/summary.md","w",encoding="utf-8").write(md)
+webhook = os.environ.get("DISCORD_WEBHOOK")
+if webhook: requests.post(webhook, json={"content": f"**TPscan Summary**\n```\n{md[:1900]}\n```"})
+PY
+
+      # Commit reports
+      - name: Commit reports
+        run: |
+          git checkout -B scan-reports
+          git add reports/*
+          git commit -m "TPscan report $(date -u +'%Y-%m-%dT%H:%MZ')" || echo "No changes"
+          git push -f https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git scan-reports
+
+      # Build Docker images
+      - name: Build Docker images
+        run: |
+          docker build -t cloud-android-web ./cloud-android-web
+          docker build -t backend ./backend
+          docker build -t frontend ./frontend
+          docker-compose -f mongo/docker-compose-mongo.yml build
+
+      # AWS ECR login
+      - name: AWS ECR login
+        uses: aws-actions/amazon-ecr-login@v1
+
+      # Push Docker images
+      - name: Push Docker images
+        run: |
+          AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION=${{ secrets.AWS_REGION }}
+          docker tag cloud-android-web $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/cloud-android-web:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/cloud-android-web:latest
+          docker tag backend $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/backend:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/backend:latest
+          docker tag frontend $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/frontend:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/frontend:latest
+          docker tag mongo_mongo $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/mongo:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/mongo:latest
+
+      # Auto Create / Update ECS Task Definitions and Services
+      - name: Deploy ECS services auto
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          set -e
+          CLUSTER=cloud-android-cluster
+
+          declare -A SERVICES
+          SERVICES=(
+            [cloud-android-web]=cloud-android-web:latest
+            [backend-service]=backend:latest
+            [frontend-service]=frontend:latest
+            [mongo-service]=mongo:latest
+          )
+
+          for SERVICE in "${!SERVICES[@]}"; do
+            IMAGE=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/${SERVICES[$SERVICE]}
+            TASK_DEF_JSON=$(cat <<EOF
+{
+  "family": "$SERVICE-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::$AWS_ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "$SERVICE",
+      "image": "$IMAGE",
+      "essential": true,
+      "portMappings": [{"containerPort": 80, "protocol": "tcp"}]
+    }
+  ]
+}
+EOF
+)
+            echo "$TASK_DEF_JSON" > taskdef.json
+            TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://taskdef.json --region $AWS_REGION --query "taskDefinition.taskDefinitionArn" --output text)
+
+            # Check if service exists
+            if aws ecs describe-services --cluster $CLUSTER --services $SERVICE --region $AWS_REGION | grep -q '"status": "ACTIVE"'; then
+              echo "Updating existing service $SERVICE..."
+              aws ecs update-service --cluster $CLUSTER --service $SERVICE --task-definition $TASK_DEF_ARN --force-new-deployment --region $AWS_REGION
+            else
+              echo "Creating service $SERVICE..."
+              aws ecs create-service --cluster $CLUSTER --service-name $SERVICE --task-definition $TASK_DEF_ARN --launch-type FARGATE --desired-count 1 --network-configuration "awsvpcConfiguration={subnets=[subnet-XXXXXX],securityGroups=[sg-XXXXXX],assignPublicIp=ENABLED}" --region $AWS_REGION
+            fi
+          done
