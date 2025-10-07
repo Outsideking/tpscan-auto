@@ -1,0 +1,76 @@
+name: TPscan + GPT Summary (no-external-actions)
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 2 * * *'  # รันทุกวัน 09:00 เวลาไทย
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Clone repo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install deps (Go + Python)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y golang-go python3-pip jq
+          pip install --upgrade openai
+
+      - name: Pull & build TPscan (Go version)
+        run: |
+          mkdir -p tools && cd tools
+          git clone https://github.com/captain686/TpScan.git
+          cd TpScan
+          go build -o tpscan
+
+      - name: Run scan
+        run: |
+          mkdir -p reports
+          ./tools/TpScan/tpscan -f targets.txt | tee reports/raw.txt || echo "Scan completed with warnings"
+
+      - name: Summarize with GPT
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          cd reports
+          python3 - << 'PY'
+          import os, io
+          from openai import OpenAI
+          api = os.getenv("OPENAI_API_KEY")
+          if not api:
+              raise RuntimeError("❌ OPENAI_API_KEY not set in repo secrets.")
+          client = OpenAI(api_key=api)
+          raw = io.open("raw.txt","r",encoding="utf-8",errors="ignore").read()
+          prompt = (
+              "สรุปผลการสแกน ThinkPHP เป็น bullet list โดยเรียงจากความเสี่ยงสูงสุดถึงต่ำสุด "
+              "ระบุ URL/หลักฐาน และข้อเสนอแนะแก้ไขต่อรายการแบบสั้น\n\n"
+              f"Raw logs (ตัดย่อ):\n{raw[:100000]}"
+          )
+          response = client.chat.completions.create(
+              model="gpt-4o-mini",
+              messages=[
+                  {"role":"system","content":"คุณเป็นนักวิเคราะห์ความปลอดภัยเว็บ"},
+                  {"role":"user","content":prompt}
+              ],
+              temperature=0
+          )
+          md = response.choices[0].message.content
+          io.open("summary.md","w",encoding="utf-8").write(md)
+          PY
+
+      - name: Commit reports to branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git checkout -B scan-reports
+          git add reports/*
+          git commit -m "tpscan report $(date -u +'%Y-%m-%dT%H:%MZ')" || echo "No changes"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" scan-reports
