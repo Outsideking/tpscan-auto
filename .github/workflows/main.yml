@@ -73,4 +73,15 @@ jobs:
           git checkout -B scan-reports
           git add reports/*
           git commit -m "tpscan report $(date -u +'%Y-%m-%dT%H:%MZ')" || echo "No changes"
+        
           git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" scan-reports
+          - name: Set up Go 1.23.x
+  uses: actions/setup-go@v5
+  with:
+    go-version: '1.23'
+
+- name: Install deps (Go + Python)
+  run: |
+    sudo apt-get update -y
+    sudo apt-get install -y python3-pip jq
+    pip install --upgrade openai
